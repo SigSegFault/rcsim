@@ -17,6 +17,7 @@ TODOs
 =====
  * add I/O pressure generators
  * add CPU pressure generators
+ * add RAM pressure generators
  * add ability to feed input from stdin to every spawned process.
 
 
