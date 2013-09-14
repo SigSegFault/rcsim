@@ -3,3 +3,7 @@ CMakeFiles
 Makefile
 cmake_install.cmake
 install_manifest.txt
+rc_sim.*
+*.a
+*.so
+rcsim-test

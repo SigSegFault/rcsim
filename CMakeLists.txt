@@ -21,5 +21,5 @@ set_target_properties(rc_sim_static PROPERTIES
     VERSION 0.1
 )
 
-add_executable(rcsim-test main.cpp)
+add_executable(rcsim-test rcsim-test.cpp)
 target_link_libraries(rcsim-test rc_sim_static)
