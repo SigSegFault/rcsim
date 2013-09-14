@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <algorithm>
 
 namespace rcs
 {
@@ -57,11 +58,17 @@ void Simulator::add_process(RaceSuspect * job, const std::string & name, size_t 
 
 void Simulator::add_process_group(RaceSuspect * job, size_t group_size, const Config & config)
 {
+    if (!group_size)
+        return;
+
     _p->_add_process_group(job, group_size, config);
 }
 
 void Simulator::add_process_group(RaceSuspect * job, size_t group_size, const std::string & name, size_t respawns)
 {
+    if (!group_size)
+        return;
+
     _p->_add_process_group(job, group_size, Config(name, respawns));
 }
 
@@ -387,6 +394,7 @@ void Simulator::_init_simulation()
     _error_log_messages.clear();
     /// Open enpropy provider.
     _urandom.open();
+    srand(_urandom.get_numeric<int>());
 }
 
 void Simulator::_shutdown_simulation()
@@ -521,6 +529,9 @@ void Simulator::_spawn_missing_processes()
     }
     _spawn_more_processes = false;
 
+    /// To spawn processes fairly we must shuffle candidates.
+    std::vector<process_type_id> candidates;
+
     /// Run through lone processes, looking for spawn candidates.
     for (LoneProcesses::iterator it = _lone_processes.begin(); it != _lone_processes.end(); ++it) {
         impl::LoneProcessInfo & process_info = it->second;
@@ -528,31 +539,43 @@ void Simulator::_spawn_missing_processes()
         if (!process_info.need_more_spawns())
             continue;
 
-        _spawn_process(it->first, process_info);
+        candidates.push_back(it->first);
     }
 
     /// Run through processe groups, looking for spawn candidates.
     for (ProcessGroups::iterator it = _process_groups.begin(); it != _process_groups.end(); ++it) {
         impl::ProcessGroupInfo & group_info = it->second;
 
-        if (!group_info.need_more_spawns())
+        size_t spawns = group_info.need_more_spawns();
+        if (!spawns)
             continue;
 
-        while (group_info.need_more_running())
-            _spawn_process(it->first, group_info);
+        candidates.insert(candidates.end(), spawns, it->first);
     }
+
+    std::random_shuffle(candidates.begin(), candidates.end());
+    for (size_t i = 0; i < candidates.size(); ++i)
+        _spawn_process(candidates.at(i));
 }
 
-
-void Simulator::_spawn_process(process_type_id process_type, ProcessGroupInfo & group_info)
+void Simulator::_spawn_process(process_type_id process_type)
 {
-    impl::ProcessData process_data;
-    process_data.is_loner = false;
-    process_data.type = process_type;
-    _spawn_process(group_info.handler, process_data);
-    _running_processes.insert(RunningProcesses::value_type(process_data.pid, process_data));
-    ++group_info.running_count;
-    ++group_info.spawns_performed;
+    /// Look in lone processes.
+    {
+        LoneProcesses::iterator it = _lone_processes.find(process_type);
+
+        if(it != _lone_processes.end())
+            return _spawn_process(process_type, it->second);
+    }
+    /// Look in process groups.
+    {
+        ProcessGroups::iterator it = _process_groups.find(process_type);
+
+        if(it != _process_groups.end())
+            return _spawn_process(process_type, it->second);
+    }
+
+    throw impl::Exception("process type not found.");
 }
 
 void Simulator::_spawn_process(process_type_id process_type, LoneProcessInfo & process_info)
@@ -565,6 +588,17 @@ void Simulator::_spawn_process(process_type_id process_type, LoneProcessInfo & p
     process_info.is_running = true;
     ++process_info.spawns_performed;
 
+}
+
+void Simulator::_spawn_process(process_type_id process_type, ProcessGroupInfo & group_info)
+{
+    impl::ProcessData process_data;
+    process_data.is_loner = false;
+    process_data.type = process_type;
+    _spawn_process(group_info.handler, process_data);
+    _running_processes.insert(RunningProcesses::value_type(process_data.pid, process_data));
+    ++group_info.running_count;
+    ++group_info.spawns_performed;
 }
 
 void Simulator::_spawn_process(RaceSuspect * handler, ProcessData & process_data)
@@ -660,19 +694,19 @@ void Simulator::_process_handler(RaceSuspect * handler)
     _init_mutex.lock_read();
     /// Init asynchronously.
     if (!handler->init())
-        throw impl::Exception(" handler initialization failed.");
+        throw impl::Exception("handler initialization failed.");
     /// Release lock, for we are ready to go.
     _init_mutex.unlock();
     /// Synchronize at run point.
     _sync_mutex.lock_read();
     if (!handler->run())
-        throw impl::Exception(" handler returned false.");
+        throw impl::Exception("handler returned false.");
     /// Flush output.
     fflush(stdout);
     fflush(stderr);
     /// Cleanup aftermath.
     if (!handler->shutdown())
-        throw impl::Exception(" handler shutdown failed.");
+        throw impl::Exception("handler shutdown failed.");
 }
 
 void Simulator::_kill_all_processes()
@@ -1009,13 +1043,13 @@ bool Simulator::_read_all(int fd, std::string & str)
     while (true) {
         read_bytes = ::read(fd, buf, sizeof(buf));
         if (read_bytes < 0) {
-            if(errno == EINTR)
+            if (errno == EINTR)
                 continue;
-            else if(errno == EAGAIN || errno == EWOULDBLOCK)
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
                 break;
             else
                 throw impl::Exception("failed to read data from descriptor, and the reason is: %s.", strerror(errno));
-        } else if(!read_bytes)
+        } else if (!read_bytes)
             break;
 
         str.append(buf, read_bytes);
@@ -1033,7 +1067,7 @@ void Simulator::_write_all(int fd, const std::string & str)
     while (offset < size) {
         written_bytes = ::write(fd, str.c_str() + offset, size);
         if (written_bytes < 0) {
-            if(errno == EINTR)
+            if (errno == EINTR)
                 continue;
             else
                 throw impl::Exception("failed to read data from descriptor, and the reason is: %s.", strerror(errno));
@@ -1051,7 +1085,7 @@ void Simulator::_write_all(int fd, const char * buf, size_t size)
     while (offset < size) {
         written_bytes = ::write(fd, buf + offset, size);
         if (written_bytes < 0) {
-            if(errno == EINTR)
+            if (errno == EINTR)
                 continue;
             else
                 throw impl::Exception("failed to read data from descriptor, and the reason is: %s.", strerror(errno));

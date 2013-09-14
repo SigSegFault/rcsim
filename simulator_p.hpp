@@ -157,14 +157,15 @@ struct ProcessGroupInfo
         spawns_performed = 0;
     }
 
-    bool need_more_spawns()
+    size_t need_more_spawns()
     {
-        return spawns_performed < config.respawns + group_size;
-    }
+        if(spawns_performed >= config.respawns + group_size)
+            return 0;
 
-    bool need_more_running()
-    {
-        return need_more_spawns() && running_count < group_size;
+        size_t spawns_left = config.respawns + group_size - spawns_performed;
+        size_t missing = group_size - running_count;
+
+        return missing > spawns_left ? spawns_left : missing;
     }
 
 
@@ -271,13 +272,16 @@ public:
     /// Run through templates and see whether there are processes need to be spawned.
     void _spawn_missing_processes();
 
+    /// Spawn process of specific kind.
+    void _spawn_process(process_type_id process_type);
+
     /// Spawn lone process.
     void _spawn_process(process_type_id process_type, LoneProcessInfo & process_info);
 
     /// Spawn group member process.
     void _spawn_process(process_type_id process_type, ProcessGroupInfo & group_info);
 
-    /// Spawn process of specific kind.
+    /// Spawn abstract process.
     void _spawn_process(RaceSuspect * handler, ProcessData & process_data);
 
     void _process_handler(RaceSuspect * handler);
