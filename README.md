@@ -13,6 +13,13 @@ What it basically provides is:
  * bunching of stdout/stderr from all the processes to buffer, prepending nice timestamp, with the ability to send output to stdout/stderr of the former process
 
 
+TODOs
+=====
+ * add I/O pressure generators
+ * add CPU pressure generators
+ * add ability to feed input from stdin to every spawned process.
+
+
 Examples
 =====
 
