@@ -6,4 +6,10 @@ install_manifest.txt
 rc_sim.*
 *.a
 *.so
+*.so.*
 rcsim-test
+rcsim-example01
+rcsim-example02
+rcsim-example03
+rcsim-example04
+rcsim-example05

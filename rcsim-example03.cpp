@@ -30,29 +30,25 @@ using namespace std;
 
 bool foo()
 {
-    std::cin >> std::noskipws;
-    std::string message(std::istream_iterator<char>(std::cin), std::istream_iterator<char>());
-    printf("Sgt foo reports: '%s'\n", message.c_str());
+    printf("hello bar!\n");
     return true;
 }
 
 bool bar()
 {
-    std::cin >> std::noskipws;
-    std::string message(std::istream_iterator<char>(std::cin), std::istream_iterator<char>());
-    std::cout << "Colonel bar confirms: '" << message << "'!" << std::endl;
+    std::cout << "hello foo!" << std::endl;
     return true;
 }
 
 bool baz()
 {
-    std::cout << "baz is just too high!" << std::endl;
+    std::cerr << "what about baz, guys!?" << std::endl;
     return true;
 }
 
 bool qux()
 {
-    fprintf(stderr, "cmon buz!\n");
+    fprintf(stderr, "sup buz!\n");
     return true;
 }
 
@@ -69,10 +65,16 @@ int main()
     /// 1 instances of qux will run simultaneously.
     sim.add_process(qux, "qux", 99);
     sim.set_log_to_std(true);
-    /// All input from stdin will be fed to simulated processes.
-    /// So you can use something like:
-    /// ~# echo "message" | ./rcsim-example02
-    sim.set_redirect_stdin(true);
+    /// Add two I/O pressure generators at '/tmp'.
+    sim.add_io_pressure("/tmp");
+    sim.add_io_pressure("/tmp");
+    /// Add four CPU pressure generators.
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    /// Add single ram pressure generator.
+    sim.add_ram_pressure(512);
     sim.run_simulation();
     return 0;
 }

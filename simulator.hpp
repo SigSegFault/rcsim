@@ -55,13 +55,16 @@ typedef bool (*race_suspect_function_t)();
 /// Per prosess/process group config.
 struct Config
 {
-    Config(const std::string & name = std::string(), size_t respawns = 0)
+    Config(const std::string & name = std::string(), size_t concurrent = 1, size_t respawns = 0)
         :name(name),
+          concurrent(concurrent),
           respawns(respawns)
     { }
 
     /// Name of the proces or a group of processes.
     std::string name;
+    /// Number of concurrently running processes.
+    size_t      concurrent;
     /// Number of process respawns.
     size_t      respawns;
 };
@@ -81,6 +84,7 @@ public:
     Simulator();
     ~Simulator();
 
+
     /// ////////////////////////////////////// ///
     ///                                        ///
     ///  Add single process to the simulation  ///
@@ -90,17 +94,13 @@ public:
     ///
     /// Job as a RaceSuspect derived object.
     /// Simulator takes ownership of the @param job object, so it must be allocated on heap.
-    void add_process(RaceSuspect * job, const Config & config);
     void add_process(RaceSuspect * job, const std::string & name, size_t respawns = 0);
 
     /// Job as a function.
-    inline void add_process(race_suspect_function_t job, const Config & config);
     inline void add_process(race_suspect_function_t job, const std::string & name, size_t respawns = 0);
 
     /// Job as a functor.
     /// Functor must have overloaded function operator taking no arguments, as well as available copy constructor.
-    template <typename F>
-    inline void add_process(F & job, const Config & config);
     template <typename F>
     inline void add_process(F & job, const std::string & name, size_t respawns = 0);
 
@@ -112,48 +112,93 @@ public:
     /// ///////////////////////////////////// ///
     ///
     ///
+    /// Processes of group run simultaneously.
+    ///
     /// Job as a RaceSuspect derived object.
     /// Simulator takes ownership of the @param job object, so it must be allocated on heap.
-    void add_process_group(RaceSuspect * job, size_t group_size, const Config & config);
     void add_process_group(RaceSuspect * job, size_t group_size, const std::string & name, size_t respawns = 0);
 
     /// Job as a function.
-    inline void add_process_group(race_suspect_function_t job, size_t group_size, const Config & config);
     inline void add_process_group(race_suspect_function_t job, size_t group_size, const std::string & name, size_t respawns = 0);
 
     /// Job as a functor.
     /// Functor must have overloaded function operator taking no arguments, as well as available copy constructor.
     template <typename F>
-    inline void add_process_group(F & job, size_t group_size, const Config & config);
-    template <typename F>
     inline void add_process_group(F & job, size_t group_size, const std::string & name, size_t respawns = 0);
 
 
-    /// Returns true if everything gone smooth.
-    /// If false is returned you can check out log messages.
-    /// False will be returned in such cases:
-    ///  * internal error;
-    ///  * at least one child process abnormally (by a signal) terminated;
-    ///  * at least one child process's exit code is not 0;
-    ///  * at least one child process's job handler returns false;
-    ///  * at least one child process's job handler throws exception.
-    bool run_simulation();
+    /// //////////////////////////////////////////// ///
+    ///                                              ///
+    ///  Add process to the simulation using config  ///
+    ///                                              ///
+    /// //////////////////////////////////////////// ///
+    ///
+    ///
+    /// Job as a RaceSuspect derived object.
+    /// Simulator takes ownership of the @param job object, so it must be allocated on heap.
+    void add_process(RaceSuspect * job, const Config & config);
+
+    /// Job as a function.
+    inline void add_process(race_suspect_function_t job, const Config & config);
+
+    /// Job as a functor.
+    /// Functor must have overloaded function operator taking no arguments, as well as available copy constructor.
+    template <typename F>
+    inline void add_process(F & job, const Config & config);
 
 
-    /// Clear internal state, abandoning:
-    ///  * added process templates;
-    ///  * added process group templates;
-    ///  * stdout/stderr log messages.
-    void clear();
+    /// ///////////////////////// ///
+    ///                           ///
+    ///  Add pressure generators  ///
+    ///                           ///
+    /// ///////////////////////// ///
+    ///
+    ///
+    /// Side note: you must not worry about specifying incorrect values for pressure
+    ///            generatots; those will run in separate processes and will be
+    ///            respawned, if crashed, having 0 influence on simulation outcome;
+    ///            moreover, in real-life scenarious, unexpected behaviour is
+    ///            the pie, when it comes to race conditions. So, be brave! =)
+    ///
+    /// Add I/O pressure generator at the specific file system location.
+    /// Directory path is expected, and if process does not have permission
+    /// to create/unlink file there, false will be returned.
+    bool add_io_pressure(const std::string & where);
 
+    /// Add CPU pressure generator.
+    /// Pressure is generated by constantly copying data from one place to another.
+    /// You can adjust block size and that will basically reflect CPU cache pollution.
+    /// Block size is specified in kilobytes, with minimum size of 2 kilobytes.
+    void add_cpu_pressure(size_t kilobytes = 2);
+
+    /// Add RAM pressure generator.
+    /// Pressure is generated by allocating block of memory and keeping it resident
+    /// in RAM by first making pages dirty and then just sleeping.
+    /// So yeah, you should probably disable swap, unless you want your system dead =)
+    /// Block size is specified in megabytes, with minimum size of 1 megabyte.
+    void add_ram_pressure(size_t magabytes = 1);
+
+
+    /// ///////////////// ///
+    ///                   ///
+    ///  Adjust settings  ///
+    ///                   ///
+    /// ///////////////// ///
+    ///
+    ///
+    /// Check whether simulation will abort upon encountering first failure.
+    bool abort_on_first_failure() const;
+
+    /// Check whether simulation will abort upon encountering first failure.
+    void set_abort_on_first_failure(bool enabled = true);
 
     /// Check if redirection of stdin is enabled.
     /// If true, all data from stdin will be redirected to each simulated process.
-    bool redirect_stdin();
+    bool redirect_stdin() const;
 
     /// Enable or disable redirection of stdin.
+    /// By default, input redirection is disabled.
     void set_redirect_stdin(bool enabled = true);
-
 
     /// Check if logging to stdout/stderr enabled.
     bool log_to_std() const;
@@ -162,8 +207,8 @@ public:
     /// Logging is disabled by default.
     /// In any case, enabled logging to std or not, all logs
     /// will be saved to corresponding buffers.
+    /// By default logging to stdout/stderr is disabled.
     void set_log_to_std(bool enabled = true);
-
 
     /// Get stdout log buffer content.
     /// Simulator's own messages, as well as output from all childs'
@@ -179,6 +224,31 @@ public:
 
     /// Clear stderr log buffer.
     void clear_error_log_messages();
+
+
+    /// ////////////////////// ///
+    ///                        ///
+    ///  Begin the simulation  ///
+    ///                        ///
+    /// ////////////////////// ///
+    ///
+    ///
+    /// Returns true if everything gone smooth.
+    /// If false is returned you can check out log messages.
+    /// False will be returned in such cases:
+    ///  * internal error;
+    ///  * at least one child process abnormally (by a signal) terminated;
+    ///  * at least one child process's exit code is not 0;
+    ///  * at least one child process's job handler returns false;
+    ///  * at least one child process's job handler throws exception.
+    bool run_simulation();
+
+    /// Clear internal state, abandoning:
+    ///  * added process templates;
+    ///  * added process group templates;
+    ///  * stdout/stderr log messages.
+    void clear();
+
 
 private:
     impl::Simulator * _p;
@@ -230,33 +300,27 @@ private:
 } /// namespace impl
 
 
-template <typename F>
-inline void Simulator::add_process(F & job, const Config & config)
-{ add_process(new impl::FunctorWrapper<F>(job), config); }
+
+inline void Simulator::add_process(race_suspect_function_t job, const std::string & name, size_t respawns)
+{ add_process(new impl::FunctionWrapper(job), Config(name, 1, respawns)); }
 
 template <typename F>
 inline void Simulator::add_process(F & job, const std::string & name, size_t respawns)
-{ add_process(new impl::FunctorWrapper<F>(job), Config(name, respawns)); }
+{ add_process(new impl::FunctorWrapper<F>(job), Config(name, 1, respawns)); }
+
+inline void Simulator::add_process_group(race_suspect_function_t job, size_t group_size, const std::string & name, size_t respawns)
+{ add_process(new impl::FunctionWrapper(job), Config(name, group_size, respawns)); }
+
+template <typename F>
+inline void Simulator::add_process_group(F & job, size_t group_size, const std::string & name, size_t respawns)
+{ add_process(new impl::FunctorWrapper<F>(job), Config(name, group_size, respawns)); }
 
 inline void Simulator::add_process(race_suspect_function_t job, const Config & config)
 { add_process(new impl::FunctionWrapper(job), config); }
 
-inline void Simulator::add_process(race_suspect_function_t job, const std::string & name, size_t respawns)
-{ add_process(new impl::FunctionWrapper(job), Config(name, respawns)); }
-
 template <typename F>
-inline void Simulator::add_process_group(F & job, size_t group_size, const Config & config)
-{ add_process_group(new impl::FunctorWrapper<F>(job), group_size, config); }
-
-template <typename F>
-inline void Simulator::add_process_group(F & job, size_t group_size, const std::string & name, size_t respawns)
-{ add_process_group(new impl::FunctorWrapper<F>(job), group_size, Config(name, respawns)); }
-
-inline void Simulator::add_process_group(race_suspect_function_t job, size_t group_size, const Config & config)
-{ add_process_group(new impl::FunctionWrapper(job), group_size, config); }
-
-inline void Simulator::add_process_group(race_suspect_function_t job, size_t group_size, const std::string & name, size_t respawns)
-{ add_process_group(new impl::FunctionWrapper(job), group_size, Config(name, respawns)); }
+inline void Simulator::add_process(F & job, const Config & config)
+{ add_process(new impl::FunctorWrapper<F>(job), config); }
 
 } /// namespace rcs
 

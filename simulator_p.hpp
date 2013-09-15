@@ -68,6 +68,8 @@ private:
     int _urand_fd;
 };
 
+
+
 /// Cross-process mutex based on locking shared file descriptor.
 struct ProcessMutex
 {
@@ -94,7 +96,7 @@ private:
     enum LockMode { LockNone, LockRead, LockWrite };
 
     /// Open file descriptor.
-    void _open_fd();
+    void _open_fd(const char * path);
 
     /// Close file descriptor.
     void _close_fd();
@@ -110,44 +112,25 @@ private:
     int         _fd;
 };
 
-/// Generic process data.
-struct LoneProcessInfo
+
+typedef size_t process_class_id;
+
+enum ProcessType
 {
-    LoneProcessInfo(RaceSuspect * handler, const Config & config)
-        :handler(handler),
-          config(config),
-          spawns_performed(0)
-    { }
-
-    void reset()
-    {
-        is_running = false;
-        spawns_performed = 0;
-    }
-
-    bool need_more_spawns()
-    {
-        return spawns_performed < config.respawns + 1;
-    }
-
-    size_t expected_count() const
-    {
-        return config.respawns + 1;
-    }
-
-    RaceSuspect *   handler;
-    Config          config;
-    bool            is_running;
-    size_t          spawns_performed;
+    ProcessTypeSimulatedLoner,
+    ProcessTypeSimulatedGroup,
+    ProcessTypeAuxIOPressure,
+    ProcessTypeAuxCPUPressure,
+    ProcessTypeAuxRAMPressure
 };
 
-/// Generic process data.
-struct ProcessGroupInfo
+/// Sahred data for a class of processes.
+struct ProcessClassData
 {
-    ProcessGroupInfo(RaceSuspect * handler, const Config & config, size_t group_size)
-        :handler(handler),
+    ProcessClassData(RaceSuspect * handler, ProcessType type, const Config & config)
+        :type(type),
+          handler(handler),
           config(config),
-          group_size(group_size),
           running_count(0),
           spawns_performed(0)
     { }
@@ -160,58 +143,59 @@ struct ProcessGroupInfo
 
     size_t need_more_spawns()
     {
-        if (spawns_performed >= config.respawns + group_size)
+        if (spawns_performed >= config.respawns + config.concurrent)
             return 0;
 
-        size_t spawns_left = config.respawns + group_size - spawns_performed;
-        size_t missing = group_size - running_count;
+        size_t spawns_left = config.respawns + config.concurrent - spawns_performed;
+        size_t missing = config.concurrent - running_count;
 
         return missing > spawns_left ? spawns_left : missing;
     }
 
 
-    size_t expected_count() const
+    size_t max_count() const
     {
-        return config.respawns + group_size;
+        return config.respawns + config.concurrent;
     }
 
 
+    /// Defined whitch type of process it is.
+    ProcessType     type;
     RaceSuspect *   handler;
     Config          config;
-    size_t          group_size;
     size_t          running_count;
     size_t          spawns_performed;
 };
 
-typedef size_t process_type_id;
-
-struct SimulatedProcessData
+/// Generic process data.
+struct GenericProcessData
 {
-    SimulatedProcessData()
+    GenericProcessData()
         :pid(0),
-          is_loner(false),
           stdin_bytes_fed(0),
-          type(0),
+          class_id(0),
           stdin_fd(-1),
           stdout_fd(-1),
           stderr_fd(-1)
     { }
 
+    void close_stdin();
+    void close_stdout();
+    void close_stderr();
+
     /// OS's process identifier.
-    pid_t           pid;
-    /// true indicates that process belongs to the lone processes list.
-    /// Otherwise it's a member of group of processes.
-    bool            is_loner;
+    pid_t               pid;
     /// Size of the stdin data fed to process.
-    size_t          stdin_bytes_fed;
-    /// Proces type identifier.
-    process_type_id type;
+    size_t              stdin_bytes_fed;
+    /// Proces type identifier used for lookup of extended process data
+    /// in, corresponding for specific process type, storage.
+    process_class_id    class_id;
     /// The other side of the process's stdin pipe.
-    int             stdin_fd;
+    int                 stdin_fd;
     /// The other side of the process's stdout pipe.
-    int             stdout_fd;
+    int                 stdout_fd;
     /// The other side of the process's stderr pipe.
-    int             stderr_fd;
+    int                 stderr_fd;
 };
 
 /// Descriptor events.
@@ -242,18 +226,12 @@ public:
     Simulator();
     ~Simulator();
 
-    /// Every process is either a lone process, or belongs to process group.
-    /// This is judjed by it's woerker_type_id value.
-    ///
-    /// Lone processes templates.
-    typedef std::map<process_type_id, LoneProcessInfo>  LoneProcesses;
-    /// Groups of processes templates.
-    typedef std::map<process_type_id, ProcessGroupInfo> ProcessGroups;
-
-    /// Per process data.
-    typedef std::map<pid_t, SimulatedProcessData>       RunningProcesses;
+    /// Process class data container.ProcessClassMap
+    typedef std::map<process_class_id, ProcessClassData>    ProcessClassDataMap;
+    /// Generic process data container.
+    typedef std::map<pid_t, GenericProcessData>             GenericProcessesDataMap;
     /// File descriptor to pid mapping.
-    typedef std::map<int, DescriptorWatchData>          DescriptorMap;
+    typedef std::map<int, DescriptorWatchData>              DescriptorMap;
 
 
     /// /////////////////// ///
@@ -263,11 +241,8 @@ public:
     /// /////////////////// ///
     ///
     ///
-    /// Add race suspect to simulation as a lone process.
-    void _add_process(RaceSuspect * handler, const Config & conf);
-
-    /// Add race suspect to simulation as a process group.
-    void _add_process_group(RaceSuspect * handler, size_t group_size, const Config & conf);
+    /// Add new process class.
+    void _add_process(RaceSuspect * handler, ProcessType type, const Config & conf);
 
     /// Perform simulation initialization.
     void _init_simulation();
@@ -299,18 +274,13 @@ public:
     /// Run through templates and see whether there are processes need to be spawned.
     void _spawn_missing_processes();
 
-    /// Spawn process of specific kind.
-    void _spawn_process(process_type_id process_type);
+    /// Spawn process of specific class.
+    void _spawn_process(process_class_id process_type);
 
-    /// Spawn lone process.
-    void _spawn_process(process_type_id process_type, LoneProcessInfo & process_info);
+    /// Spawn generic process.
+    void _spawn_process(RaceSuspect * handler, GenericProcessData & process_data);
 
-    /// Spawn group member process.
-    void _spawn_process(process_type_id process_type, ProcessGroupInfo & group_info);
-
-    /// Spawn abstract process.
-    void _spawn_process(RaceSuspect * handler, SimulatedProcessData & process_data);
-
+    /// Process handler wrapper.
     void _process_handler(RaceSuspect * handler);
 
     /// Brutally kill all the processes.
@@ -380,19 +350,16 @@ public:
     ///
     ///
     /// Generate unique process type id.
-    process_type_id _new_process_type_id();
+    process_class_id _new_process_type_id();
 
     /// Get process data by pid.
-    SimulatedProcessData & _get_process_data(pid_t pid);
+    GenericProcessData & _get_process_data(pid_t pid);
 
-    /// Get process info by process type.
-    LoneProcessInfo & _get_process_info(process_type_id process_type);
+    /// Get class data for specific process type ID.
+    ProcessClassData & _get_process_class_data(process_class_id process_type);
 
-    /// Get process group info by process type.
-    ProcessGroupInfo & _get_process_group_info(process_type_id process_type);
-
-    /// Run through templates and count expected number of processes.
-    size_t _get_expected_process_count();
+    /// Run through templates and get maximum number of simulated processes to be spawned.
+    size_t _get_simulated_process_count();
 
     /// Map descriptor to pid.
     pid_t _descriptor_to_pid(int fd);
@@ -413,69 +380,144 @@ public:
 
     /// Read pending data from the file descriptor and append result to string.
     /// Return true if soemthing's being read.
-    bool _read_pending(int fd, std::string & str);
+    static bool _read_pending(int fd, std::string & str);
 
     /// Try to write max possible chunk of data to the file descroptor,
     /// ignoring signal interruptions.
-    ssize_t _write(int fd, const void * data, size_t size);
+    static ssize_t _write_max(int fd, const void * data, size_t size);
 
     /// Write whole string, ignoring signal interruptions.
     /// Does not expect descriptor to be in non-blocking mode!
-    void _write_all(int fd, const std::string & str);
-    void _write_all(int fd, const void * buf, size_t size);
+    static void _write_all(int fd, const std::string & str);
+    static void _write_all(int fd, const void * buf, size_t size);
 
     /// Make IO operations on descriptor non-blocking.
-    void _set_descriptor_non_blocking(int fd);
+    static void _set_descriptor_non_blocking(int fd);
 
     /// Sleep for arbitrary milliseconds, ignoring all interrupting signals.
-    void _sleep_ms(int ms);
+    static void _sleep_ms(int ms);
+
+    /// Check if it is possible to create file at speicific FS location.
+    static bool _can_create_files(const std::string & path);
 
 
-    /// Flag indiacating need to spawn more processes.
-    bool                _spawn_more_processes;
-    /// Whether to log output to stdout/stderr.
-    bool                _log_to_std;
-    /// Whether redirection of stdin is enabled.
-    bool                _redirect_stdin;
-    /// stdin data to be fed to simualted processes.
-    std::string         _stdin_data;
-    /// Statistics
+    /// /////////////// ///
+    ///                 ///
+    ///  Settings data  ///
+    ///                 ///
+    /// /////////////// ///
     ///
-    /// Number of processes that have failed to perform jib correctly.
-    size_t              _failed_count;
-    /// Number of processes successfully done thir duty.
-    size_t              _successful_count;
-    /// Number of spawned processes
-    size_t              _spawned_count;
-    /// Expected number of spawned processes.
-    size_t              _expected_count;
+    ///
+    /// Whether redirection of stdin is enabled.
+    bool                    _abort_on_failure;
+    /// Whether to log output to stdout/stderr.
+    bool                    _log_to_std;
+    /// Whether redirection of stdin is enabled.
+    bool                    _redirect_stdin;
+    /// stdin data to be fed to simualted processes.
+    std::string             _stdin_data;
     /// Buffer for stdout log messages.
-    std::string         _log_messages;
+    std::string             _log_messages;
     /// Buffer stderr log messages.
-    std::string         _error_log_messages;
+    std::string             _error_log_messages;
+
+
+    /// ////////// ///
+    ///            ///
+    ///  Aux data  ///
+    ///            ///
+    /// ////////// ///
+    ///
+    ///
     /// Entropy provider.
-    Urandom             _urandom;
+    Urandom                 _urandom;
     /// Initialization mutex.
     /// Used by a master process to determine moment when the last
     /// process of the first generation finished initialization stage.
-    ProcessMutex        _init_mutex;
+    ProcessMutex            _init_mutex;
     /// Sync mutex, used to synchronize the execution of critical section
     /// of the first generation of processes.
-    ProcessMutex        _sync_mutex;
+    ProcessMutex            _sync_mutex;
+    /// System's page size expressed in bytes.
+    size_t                  _page_size;
+
+
+    /// ////////////////////// ///
+    ///                        ///
+    ///  Process-related data  ///
+    ///                        ///
+    /// ////////////////////// ///
+    ///
+    ///
+    /// Flag indiacating need to spawn more processes.
+    bool                    _spawn_more_processes;
+    /// Number of processes that have failed to perform jib correctly.
+    size_t                  _failed_count;
+    /// Number of processes successfully done thir duty.
+    size_t                  _successful_count;
+    /// Number of spawned processes
+    size_t                  _spawned_count;
+    /// Maximum number of simulated processes to be spawned.
+    size_t                  _simulated_count;
     /// Las process type id.
-    process_type_id     _process_type_last;
-    /// Individual data of each lone process.
-    LoneProcesses       _lone_processes;
-    /// Individual data of each group of processes.
-    ProcessGroups       _process_groups;
+    process_class_id        _process_type_last;
+    /// Process calss data storage.
+    ProcessClassDataMap     _process_class_data;
     /// Abstract data of each simulated running proccess.
-    RunningProcesses    _running_processes;
+    GenericProcessesDataMap _running_processes;
     /// Descriptor map, used for watching descriptor events.
-    DescriptorMap       _descriptor_map;
+    DescriptorMap           _descriptor_map;
     /// Poll buffer.
-    std::vector<pollfd> _poll_buffer;
+    std::vector<pollfd>     _poll_buffer;
     /// Flag indicating need to update above poll buffer.
-    bool                _poll_buffer_needs_update;
+    bool                    _poll_buffer_needs_update;
+};
+
+/// IO pressure generator handler.
+struct IOPressureGenerator : public RaceSuspect
+{
+    IOPressureGenerator(const std::string & path);
+
+    bool init();
+    bool run();
+    bool shutdown();
+
+private:
+    void _pool_master();
+
+    std::string _path;
+};
+
+/// CPU pressure generator handler.
+struct CPUPressureGenerator : public RaceSuspect
+{
+    CPUPressureGenerator(size_t kilobytes);
+
+    bool init();
+    bool run();
+    bool shutdown();
+
+private:
+    void _use_stack();
+    void _use_heap();
+    void _pool_master();
+
+    size_t  _kilobytes;
+};
+
+/// RAM pressure generator handler.
+struct RAMPressureGenerator : public RaceSuspect
+{
+    RAMPressureGenerator(size_t megabytes);
+
+    bool init();
+    bool run();
+    bool shutdown();
+
+private:
+    void _pool_master();
+
+    size_t  _megabytes;
 };
 
 } /// namespace impl

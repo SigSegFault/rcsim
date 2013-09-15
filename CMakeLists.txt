@@ -37,3 +37,7 @@ target_link_libraries(rcsim-example01 rcsim_static)
 # EXAMPLE 02
 add_executable(rcsim-example02 rcsim-example02.cpp)
 target_link_libraries(rcsim-example02 rcsim_static)
+
+# EXAMPLE 03
+add_executable(rcsim-example03 rcsim-example03.cpp)
+target_link_libraries(rcsim-example03 rcsim_static)
