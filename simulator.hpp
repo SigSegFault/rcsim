@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- * Copyright (C) 2012 Paul Letnyanko                                       *
+ * Copyright (C) 2013 Paul Letnyanko                                       *
  *                                                                         *
  * Permission is hereby granted, free of charge, to any person obtaining a *
  * copy of this software and associated documentation files (the           *
@@ -129,12 +129,6 @@ public:
     inline void add_process_group(F & job, size_t group_size, const std::string & name, size_t respawns = 0);
 
 
-    /// Clear internal state, abandoning:
-    ///  * added process templates;
-    ///  * added process group templates;
-    ///  * stdout/stderr log messages.
-    void clear();
-
     /// Returns true if everything gone smooth.
     /// If false is returned you can check out log messages.
     /// False will be returned in such cases:
@@ -145,6 +139,22 @@ public:
     ///  * at least one child process's job handler throws exception.
     bool run_simulation();
 
+
+    /// Clear internal state, abandoning:
+    ///  * added process templates;
+    ///  * added process group templates;
+    ///  * stdout/stderr log messages.
+    void clear();
+
+
+    /// Check if redirection of stdin is enabled.
+    /// If true, all data from stdin will be redirected to each simulated process.
+    bool redirect_stdin();
+
+    /// Enable or disable redirection of stdin.
+    void set_redirect_stdin(bool enabled = true);
+
+
     /// Check if logging to stdout/stderr enabled.
     bool log_to_std() const;
 
@@ -153,6 +163,7 @@ public:
     /// In any case, enabled logging to std or not, all logs
     /// will be saved to corresponding buffers.
     void set_log_to_std(bool enabled = true);
+
 
     /// Get stdout log buffer content.
     /// Simulator's own messages, as well as output from all childs'

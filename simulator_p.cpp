@@ -23,6 +23,7 @@
 
 #include "simulator_p.hpp"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -72,11 +73,6 @@ void Simulator::add_process_group(RaceSuspect * job, size_t group_size, const st
     _p->_add_process_group(job, group_size, Config(name, respawns));
 }
 
-void Simulator::clear()
-{
-    _p->_clear();
-}
-
 bool Simulator::run_simulation()
 {
     try
@@ -92,6 +88,21 @@ bool Simulator::run_simulation()
         _p->_log_error("Unknown exception caught.\n");
     }
     return false;
+}
+
+void Simulator::clear()
+{
+    _p->_clear();
+}
+
+bool Simulator::redirect_stdin()
+{
+    return _p->_redirect_stdin;
+}
+
+void Simulator::set_redirect_stdin(bool enabled)
+{
+    _p->_redirect_stdin = enabled;
 }
 
 bool Simulator::log_to_std() const
@@ -150,7 +161,7 @@ private:
 
 
 
-template <int Signal>
+template <int Signal, bool ignore = false>
 struct SignalTrap
 {
     SignalTrap()
@@ -169,7 +180,10 @@ struct SignalTrap
         memset(&_sigaction_old, 0, sizeof(_sigaction_old));
 
         sigemptyset(&_sigaction.sa_mask);
-        _sigaction.sa_handler = _on_signal;
+        if (ignore)
+            _sigaction.sa_handler = SIG_IGN;
+        else
+            _sigaction.sa_handler = _on_signal;
         sigaction(Signal, &_sigaction, &_sigaction_old);
         _trap_is_set = true;
     }
@@ -196,8 +210,8 @@ private:
     struct sigaction    _sigaction_old;
 };
 
-template <int Signal>
-sig_atomic_t SignalTrap<Signal>::signal_caught = 0;
+template <int Signal, bool ignore>
+sig_atomic_t SignalTrap<Signal, ignore>::signal_caught = 0;
 
 
 
@@ -356,8 +370,7 @@ bool ProcessMutex::_lock_fd(int type)
 
 
 Simulator::Simulator()
-    :_is_running(false),
-      _spawn_more_processes(false),
+    :_spawn_more_processes(false),
       _log_to_std(false),
       _failed_count(0),
       _successful_count(0),
@@ -382,8 +395,6 @@ void Simulator::_add_process_group(RaceSuspect * handler, size_t group_size, con
 
 void Simulator::_init_simulation()
 {
-    /// We're on run.
-    _is_running = true;
     /// Reset counters.
     _failed_count = 0;
     _successful_count = 0;
@@ -395,14 +406,17 @@ void Simulator::_init_simulation()
     /// Open enpropy provider.
     _urandom.open();
     srand(_urandom.get_numeric<int>());
+    /// Read stdin data.
+    if (_redirect_stdin)
+        _read_pending(STDIN_FILENO, _stdin_data);
 }
 
 void Simulator::_shutdown_simulation()
 {
+    /// Get rid of stdin data.
+    _stdin_data.clear();
     /// Kill all processes.
     _kill_all_processes();
-    /// We're on hold.
-    _is_running = false;
     /// Reset process data.
     for (LoneProcesses::iterator it = _lone_processes.begin(); it != _lone_processes.end(); ++it)
         it->second.reset();
@@ -412,6 +426,8 @@ void Simulator::_shutdown_simulation()
 
 void Simulator::_clear()
 {
+    /// Get rid of stdin data.
+    _stdin_data.clear();
     /// Clear the logs.
     _log_messages.clear();
     _error_log_messages.clear();
@@ -457,6 +473,10 @@ bool Simulator::_run_simulation()
     impl::SignalTrap<SIGTERM> sigterm_trap;
     sigterm_trap.set_trap();
 
+    /// Set SIGPIPE trap.
+    impl::SignalTrap<SIGPIPE, true> sigpipe_trap;
+    sigpipe_trap.set_trap();
+
     /// Open init mutex.
     _init_mutex.init();
     /// Lock sync mutex.
@@ -484,7 +504,7 @@ bool Simulator::_run_simulation()
 
 void Simulator::_simulation_loop()
 {
-    while (_is_running && !impl::SignalTrap<SIGTERM>::signal_caught) {
+    while (!impl::SignalTrap<SIGTERM>::signal_caught) {
         /// Check dead processes.
         _check_for_zombies();
         /// Spawn missing processes.
@@ -564,14 +584,14 @@ void Simulator::_spawn_process(process_type_id process_type)
     {
         LoneProcesses::iterator it = _lone_processes.find(process_type);
 
-        if(it != _lone_processes.end())
+        if (it != _lone_processes.end())
             return _spawn_process(process_type, it->second);
     }
     /// Look in process groups.
     {
         ProcessGroups::iterator it = _process_groups.find(process_type);
 
-        if(it != _process_groups.end())
+        if (it != _process_groups.end())
             return _spawn_process(process_type, it->second);
     }
 
@@ -580,10 +600,16 @@ void Simulator::_spawn_process(process_type_id process_type)
 
 void Simulator::_spawn_process(process_type_id process_type, LoneProcessInfo & process_info)
 {
-    impl::ProcessData process_data;
+    impl::SimulatedProcessData process_data;
     process_data.is_loner = true;
     process_data.type = process_type;
     _spawn_process(process_info.handler, process_data);
+    /// Put descriptors on watch.
+    if (!_stdin_data.empty())
+        _watch_descriptor(process_data.stdin_fd, process_data.pid, DescriptorEventListens);
+    _watch_descriptor(process_data.stdout_fd, process_data.pid, DescriptorEventTalks);
+    _watch_descriptor(process_data.stderr_fd, process_data.pid, DescriptorEventTalks);
+    /// Save to running processes map.
     _running_processes.insert(RunningProcesses::value_type(process_data.pid, process_data));
     process_info.is_running = true;
     ++process_info.spawns_performed;
@@ -592,24 +618,39 @@ void Simulator::_spawn_process(process_type_id process_type, LoneProcessInfo & p
 
 void Simulator::_spawn_process(process_type_id process_type, ProcessGroupInfo & group_info)
 {
-    impl::ProcessData process_data;
+    impl::SimulatedProcessData process_data;
     process_data.is_loner = false;
     process_data.type = process_type;
     _spawn_process(group_info.handler, process_data);
+    /// Put descriptors on watch.
+    if (!_stdin_data.empty())
+        _watch_descriptor(process_data.stdin_fd, process_data.pid, DescriptorEventListens);
+    _watch_descriptor(process_data.stdout_fd, process_data.pid, DescriptorEventTalks);
+    _watch_descriptor(process_data.stderr_fd, process_data.pid, DescriptorEventTalks);
+    /// Save to running processes map.
     _running_processes.insert(RunningProcesses::value_type(process_data.pid, process_data));
     ++group_info.running_count;
     ++group_info.spawns_performed;
 }
 
-void Simulator::_spawn_process(RaceSuspect * handler, ProcessData & process_data)
+void Simulator::_spawn_process(RaceSuspect * handler, SimulatedProcessData & process_data)
 {
+    int stdin_pipe[2];
     int stdout_pipe[2];
     int stderr_pipe[2];
 
-    if (pipe(stdout_pipe) == -1)
+    if (pipe(stdin_pipe) == -1)
         throw impl::Exception("failed to create pipe, and the reason is: %s.", strerror(errno));
 
+    if (pipe(stdout_pipe) == -1) {
+        ::close(stdin_pipe[0]);
+        ::close(stdin_pipe[1]);
+        throw impl::Exception("failed to create pipe, and the reason is: %s.", strerror(errno));
+    }
+
     if (pipe(stderr_pipe) == -1) {
+        ::close(stdin_pipe[0]);
+        ::close(stdin_pipe[1]);
         ::close(stdout_pipe[0]);
         ::close(stdout_pipe[1]);
         throw impl::Exception("failed to create pipe, and the reason is: %s.", strerror(errno));
@@ -626,6 +667,8 @@ void Simulator::_spawn_process(RaceSuspect * handler, ProcessData & process_data
 
     /// Child process.
     if (!pid) {
+        /// Close writing side.
+        ::close(stdin_pipe[1]);
         /// Close reading side.
         ::close(stdout_pipe[0]);
         ::close(stderr_pipe[0]);
@@ -635,13 +678,10 @@ void Simulator::_spawn_process(RaceSuspect * handler, ProcessData & process_data
         {
             /// Those are not ours...
             _abandon_all_processes();
-            /// Provide null stdin.
-            int stdin_fd = ::open("/dev/null", O_RDONLY);
-            if (stdin_fd == -1)
-                throw impl::Exception("failed to open '/dev/null', and the reason is: %s.", strerror(errno));
-            if (dup2(stdin_fd, STDIN_FILENO) == -1)
+            /// Link stdin.
+            if (dup2(stdin_pipe[0], STDIN_FILENO) == -1)
                 throw impl::Exception("failed to dup2, and the reason is: %s.", strerror(errno));
-            ::close(stdin_fd);
+            ::close(stdin_pipe[0]);
             /// Link stdout.
             if (dup2(stdout_pipe[1], STDOUT_FILENO) == -1)
                 throw impl::Exception("failed to dup2, and the reason is: %s.", strerror(errno));
@@ -668,16 +708,16 @@ void Simulator::_spawn_process(RaceSuspect * handler, ProcessData & process_data
 
     /// Parent process
     ///
+    /// Close reading side.
+    ::close(stdin_pipe[0]);
     /// Close writing side.
     ::close(stdout_pipe[1]);
     ::close(stderr_pipe[1]);
     /// Make descriptors non-blocking.
     _set_descriptor_non_blocking(stdout_pipe[0]);
     _set_descriptor_non_blocking(stderr_pipe[0]);
-    /// Put descriptors on watch.
-    _watch_descriptor(stdout_pipe[0], pid);
-    _watch_descriptor(stderr_pipe[0], pid);
     /// Save descriptors.
+    process_data.stdin_fd = stdin_pipe[1];
     process_data.stdout_fd = stdout_pipe[0];
     process_data.stderr_fd = stderr_pipe[0];
     process_data.pid = pid;
@@ -759,13 +799,15 @@ void Simulator::_remove_process(pid_t pid)
 {
     /// It is dangerous to have reference to non-existent object so I make new block here.
     {
-        impl::ProcessData & process_data = _get_process_data(pid);
+        impl::SimulatedProcessData & process_data = _get_process_data(pid);
         /// Close associated descriptors.
+        ::close(process_data.stdin_fd);
         ::close(process_data.stdout_fd);
         ::close(process_data.stderr_fd);
         /// Erace descriptors from queue.
-        _forget_descriptor(process_data.stdout_fd);
-        _forget_descriptor(process_data.stderr_fd);
+        _stop_watching_descriptor(process_data.stdin_fd);
+        _stop_watching_descriptor(process_data.stdout_fd);
+        _stop_watching_descriptor(process_data.stderr_fd);
         /// Find in lone process list, and if found - update data.
         if (process_data.is_loner) {
             impl::LoneProcessInfo & process_info = _get_process_info(process_data.type);
@@ -788,15 +830,42 @@ void Simulator::_remove_process(pid_t pid)
     _running_processes.erase(pid);
 }
 
-void Simulator::_watch_descriptor(int fd, pid_t pid)
+void Simulator::_watch_descriptor(int fd, pid_t pid, descriptor_events_t events)
 {
-    _descriptor_map.insert(DescriptorMap::value_type(fd, pid));
+    DescriptorMap::iterator it = _descriptor_map.find(fd);
+
+    /// Unknown descriptor.
+    if (it == _descriptor_map.end()) {
+        _descriptor_map.insert(it, DescriptorMap::value_type(fd, DescriptorWatchData(pid, events)));
+        _poll_buffer_needs_update = true;
+        return;
+    }
+
+    /// We're already watching this event.
+    if (it->second.events == events)
+        return;
+
+    /// New event type.
+    it->second.events = events;
     _poll_buffer_needs_update = true;
 }
 
-void Simulator::_forget_descriptor(int fd)
+void Simulator::_stop_watching_descriptor(int fd, descriptor_events_t events)
 {
-    _descriptor_map.erase(fd);
+    DescriptorMap::iterator it = _descriptor_map.find(fd);
+
+    /// Unknown descriptor.
+    if (it == _descriptor_map.end())
+        return;
+
+    /// We aren't watching that event.
+    if (!(it->second.events & events))
+        return;
+
+    it->second.events &= ~events;
+    /// No event to be listened, we have to remove descriptor.
+    if (!it->second.events)
+        _descriptor_map.erase(it);
     _poll_buffer_needs_update = true;
 }
 
@@ -812,7 +881,11 @@ void Simulator::_update_poll_buffer()
     DescriptorMap::const_iterator it = _descriptor_map.begin();
     for (; it != _descriptor_map.end(); ++it, ++_pfd) {
         _pfd->revents = 0;
-        _pfd->events = POLLIN;
+        _pfd->events = 0;
+        if (it->second.events & DescriptorEventTalks)
+            _pfd->events |= POLLIN;
+        if (it->second.events & DescriptorEventListens)
+            _pfd->events |= POLLOUT;
         _pfd->fd = it->first;
     }
 }
@@ -825,28 +898,29 @@ void Simulator::_poll_descriptors()
     if (events > 0) {
         for (size_t i = 0; i < _poll_buffer.size(); ++i) {
             if (_poll_buffer.at(i).revents & POLLIN)
-                _on_descriptor_talks(_poll_buffer.at(i).fd);
-            else if (_poll_buffer.at(i).revents & POLLERR)
-                _on_descriptor_error(_poll_buffer.at(i).fd);
+                _on_descriptor_talks(_poll_buffer.at(i).fd, _descriptor_to_pid(_poll_buffer.at(i).fd));
+            if (_poll_buffer.at(i).revents & POLLERR)
+                _on_descriptor_error(_poll_buffer.at(i).fd, _descriptor_to_pid(_poll_buffer.at(i).fd));
+            else if (_poll_buffer.at(i).revents & POLLOUT)
+                _on_descriptor_listens(_poll_buffer.at(i).fd, _descriptor_to_pid(_poll_buffer.at(i).fd));
         }
     } else if (events < 0 && errno != EINTR) {
         throw impl::Exception("failed to poll, and the reason is: %s.", strerror(errno));
     }
 }
 
-void Simulator::_on_descriptor_talks(int fd)
+void Simulator::_on_descriptor_talks(int fd, pid_t pid)
 {
-    pid_t pid = _descriptor_to_pid(fd);
     std::string message;
 
     /// Nothing to be read means, the other side just closed.
-    if (!_read_all(fd, message))
+    if (!_read_pending(fd, message))
         return;
 
     if (*message.rbegin() == '\n')
         message.resize(message.size() - 1);
 
-    impl::ProcessData & process_data = _get_process_data(pid);
+    impl::SimulatedProcessData & process_data = _get_process_data(pid);
     /// stdout message.
     if (fd == process_data.stdout_fd)
         _log("%s said: %s", _get_child_name(pid).c_str(), message.c_str());
@@ -855,11 +929,33 @@ void Simulator::_on_descriptor_talks(int fd)
         _log_error("%s cried: %s", _get_child_name(pid).c_str(), message.c_str());
 }
 
-void Simulator::_on_descriptor_error(int fd)
+void Simulator::_on_descriptor_listens(int fd, pid_t pid)
 {
-    pid_t pid = _descriptor_to_pid(fd);
-    _log_error("%s error: poll() error.", _get_child_name(pid).c_str());
-    kill(pid, SIGKILL);
+    impl::SimulatedProcessData & process_data = _get_process_data(pid);
+
+    /// Bailout, if we had fed all the data.
+    if (process_data.stdin_bytes_fed >= _stdin_data.size()) {
+        _stop_watching_descriptor(fd, DescriptorEventListens);
+        return;
+    }
+
+    const void * data_ptr = _stdin_data.c_str() + process_data.stdin_bytes_fed;
+    size_t bytes_left = _stdin_data.size() - process_data.stdin_bytes_fed;
+    ssize_t fed_bytes = _write(fd, data_ptr, bytes_left);
+
+    /// The other side doesn't want input any more.
+    if (fed_bytes <= 0) {
+        _stop_watching_descriptor(fd, DescriptorEventListens);
+        return;
+    }
+
+    process_data.stdin_bytes_fed += fed_bytes;
+}
+
+void Simulator::_on_descriptor_error(int fd, pid_t pid)
+{
+    /// Descriptor is closed on the other side, we ough to stop watching it.
+    _stop_watching_descriptor(fd);
 }
 
 void Simulator::_on_child_exited(pid_t pid, int exit_status)
@@ -873,9 +969,9 @@ void Simulator::_on_child_exited(pid_t pid, int exit_status)
     /// There might be something pending on stdout/stderr of a process.
     /// It is dangerous to have reference to non-existent object so I make new block here.
     {
-        impl::ProcessData & process_data = _get_process_data(pid);
-        _on_descriptor_talks(process_data.stdout_fd);
-        _on_descriptor_talks(process_data.stderr_fd);
+        impl::SimulatedProcessData & process_data = _get_process_data(pid);
+        _on_descriptor_talks(process_data.stdout_fd, pid);
+        _on_descriptor_talks(process_data.stderr_fd, pid);
     }
     /// Now we have no use of the process.
     _remove_process(pid);
@@ -888,9 +984,9 @@ void Simulator::_on_child_terminated(pid_t pid, int signal)
     /// There might be something pending on stdout/stderr of a process.
     /// It is dangerous to have reference to non-existent object so I make new block here.
     {
-        impl::ProcessData & process_data = _get_process_data(pid);
-        _on_descriptor_talks(process_data.stderr_fd);
-        _on_descriptor_talks(process_data.stdout_fd);
+        impl::SimulatedProcessData & process_data = _get_process_data(pid);
+        _on_descriptor_talks(process_data.stderr_fd, pid);
+        _on_descriptor_talks(process_data.stdout_fd, pid);
     }
     /// Now we have no use of the process.
     _remove_process(pid);
@@ -901,7 +997,7 @@ process_type_id Simulator::_new_process_type_id()
     return ++_process_type_last;
 }
 
-ProcessData &Simulator::_get_process_data(pid_t pid)
+SimulatedProcessData &Simulator::_get_process_data(pid_t pid)
 {
     RunningProcesses::iterator it = _running_processes.find(pid);
     if (it == _running_processes.end())
@@ -958,14 +1054,14 @@ pid_t Simulator::_descriptor_to_pid(int fd)
     if (it == _descriptor_map.end())
         throw impl::Exception("file descriptor was not found in descriptor map.");
 
-    return it->second;
+    return it->second.pid;
 }
 
 std::string Simulator::_get_child_name(pid_t pid)
 {
     char prefix_buf[512];
 
-    impl::ProcessData & process_data = _get_process_data(pid);
+    impl::SimulatedProcessData & process_data = _get_process_data(pid);
     /// Process is a loner.
     if (process_data.is_loner) {
         impl::LoneProcessInfo & process_info = _get_process_info(process_data.type);
@@ -1033,7 +1129,7 @@ void Simulator::_log_error(const char * message, ...)
     va_end(arg_list);
 }
 
-bool Simulator::_read_all(int fd, std::string & str)
+bool Simulator::_read_pending(int fd, std::string & str)
 {
     char buf[1 < 12];
     size_t size_before = str.size();
@@ -1058,6 +1154,30 @@ bool Simulator::_read_all(int fd, std::string & str)
     return str.size() != size_before;
 }
 
+ssize_t Simulator::_write(int fd, const void * data, size_t size)
+{
+    size_t offset = 0;
+    ssize_t written_bytes;
+
+    while (offset < size) {
+        written_bytes = ::write(fd, static_cast<const char*>(data) + offset, size - offset);
+        if (written_bytes < 0) {
+            if (errno == EINTR)
+                continue;
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            else if (errno == EPIPE)
+                return -1;
+            else
+                throw impl::Exception("failed to write data to descriptor, and the reason is: %s.", strerror(errno));
+        } else if (!written_bytes)
+            break;
+
+        offset += written_bytes;
+    }
+    return offset;
+}
+
 void Simulator::_write_all(int fd, const std::string & str)
 {
     size_t offset = 0;
@@ -1065,30 +1185,30 @@ void Simulator::_write_all(int fd, const std::string & str)
     ssize_t written_bytes;
 
     while (offset < size) {
-        written_bytes = ::write(fd, str.c_str() + offset, size);
+        written_bytes = ::write(fd, str.c_str() + offset, size - offset);
         if (written_bytes < 0) {
             if (errno == EINTR)
                 continue;
             else
-                throw impl::Exception("failed to read data from descriptor, and the reason is: %s.", strerror(errno));
+                throw impl::Exception("failed to write data to descriptor, and the reason is: %s.", strerror(errno));
         }
 
         offset += written_bytes;
     }
 }
 
-void Simulator::_write_all(int fd, const char * buf, size_t size)
+void Simulator::_write_all(int fd, const void * buf, size_t size)
 {
     size_t offset = 0;
     ssize_t written_bytes;
 
     while (offset < size) {
-        written_bytes = ::write(fd, buf + offset, size);
+        written_bytes = ::write(fd, static_cast<const char*>(buf) + offset, size);
         if (written_bytes < 0) {
             if (errno == EINTR)
                 continue;
             else
-                throw impl::Exception("failed to read data from descriptor, and the reason is: %s.", strerror(errno));
+                throw impl::Exception("failed to write data to descriptor, and the reason is: %s.", strerror(errno));
         }
 
         offset += written_bytes;

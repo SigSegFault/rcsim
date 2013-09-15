@@ -30,5 +30,10 @@ set_target_properties(rcsim_shared PROPERTIES
     VERSION 0.1
 )
 
-add_executable(rcsim-test rcsim-test.cpp)
-target_link_libraries(rcsim-test rcsim_static)
+# EXAMPLE 01
+add_executable(rcsim-example01 rcsim-example01.cpp)
+target_link_libraries(rcsim-example01 rcsim_static)
+
+# EXAMPLE 02
+add_executable(rcsim-example02 rcsim-example02.cpp)
+target_link_libraries(rcsim-example02 rcsim_static)

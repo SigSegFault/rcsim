@@ -30,6 +30,7 @@
 #include <map>
 #include <vector>
 #include <poll.h>
+#include <sys/types.h>
 
 namespace rcs
 {
@@ -159,7 +160,7 @@ struct ProcessGroupInfo
 
     size_t need_more_spawns()
     {
-        if(spawns_performed >= config.respawns + group_size)
+        if (spawns_performed >= config.respawns + group_size)
             return 0;
 
         size_t spawns_left = config.respawns + group_size - spawns_performed;
@@ -184,12 +185,14 @@ struct ProcessGroupInfo
 
 typedef size_t process_type_id;
 
-struct ProcessData
+struct SimulatedProcessData
 {
-    ProcessData()
+    SimulatedProcessData()
         :pid(0),
           is_loner(false),
+          stdin_bytes_fed(0),
           type(0),
+          stdin_fd(-1),
           stdout_fd(-1),
           stderr_fd(-1)
     { }
@@ -199,12 +202,36 @@ struct ProcessData
     /// true indicates that process belongs to the lone processes list.
     /// Otherwise it's a member of group of processes.
     bool            is_loner;
+    /// Size of the stdin data fed to process.
+    size_t          stdin_bytes_fed;
     /// Proces type identifier.
     process_type_id type;
+    /// The other side of the process's stdin pipe.
+    int             stdin_fd;
     /// The other side of the process's stdout pipe.
     int             stdout_fd;
     /// The other side of the process's stderr pipe.
     int             stderr_fd;
+};
+
+/// Descriptor events.
+enum DescriptorEvent
+{
+    DescriptorEventTalks    = 0x1,
+    DescriptorEventListens  = 0x2
+};
+
+typedef size_t descriptor_events_t;
+
+struct DescriptorWatchData
+{
+    DescriptorWatchData(pid_t pid = 0, descriptor_events_t events = 0)
+        :pid(pid),
+          events(events)
+    { }
+
+    pid_t               pid;
+    descriptor_events_t events;
 };
 
 
@@ -224,9 +251,9 @@ public:
     typedef std::map<process_type_id, ProcessGroupInfo> ProcessGroups;
 
     /// Per process data.
-    typedef std::map<pid_t, ProcessData>                RunningProcesses;
+    typedef std::map<pid_t, SimulatedProcessData>       RunningProcesses;
     /// File descriptor to pid mapping.
-    typedef std::map<int, pid_t>                        DescriptorMap;
+    typedef std::map<int, DescriptorWatchData>          DescriptorMap;
 
 
     /// /////////////////// ///
@@ -282,7 +309,7 @@ public:
     void _spawn_process(process_type_id process_type, ProcessGroupInfo & group_info);
 
     /// Spawn abstract process.
-    void _spawn_process(RaceSuspect * handler, ProcessData & process_data);
+    void _spawn_process(RaceSuspect * handler, SimulatedProcessData & process_data);
 
     void _process_handler(RaceSuspect * handler);
 
@@ -307,11 +334,11 @@ public:
     /// //////////////////// ///
     ///
     ///
-    /// Start watching descriptor.
-    void _watch_descriptor(int fd, pid_t pid);
+    /// Watch specific descriptor events.
+    void _watch_descriptor(int fd, pid_t pid, descriptor_events_t event);
 
-    /// Stop watching descriptor.
-    void _forget_descriptor(int fd);
+    /// Stop watching specific descriptor events.
+    void _stop_watching_descriptor(int fd, descriptor_events_t event = DescriptorEventTalks | DescriptorEventListens);
 
     /// Make poll buffer up to date with the running processes.
     void _update_poll_buffer();
@@ -329,10 +356,13 @@ public:
     ///
     ///
     /// One of descriptors being polled has some data pending.
-    void _on_descriptor_talks(int fd);
+    void _on_descriptor_talks(int fd, pid_t pid);
+
+    /// One of descriptors being polled ready to read some data.
+    void _on_descriptor_listens(int fd, pid_t pid);
 
     /// One of descriptors being polled experienced error.
-    void _on_descriptor_error(int fd);
+    void _on_descriptor_error(int fd, pid_t pid);
 
     /// Child exited via return either via exit() functions family.
     void _on_child_exited(pid_t pid, int exit_status);
@@ -353,7 +383,7 @@ public:
     process_type_id _new_process_type_id();
 
     /// Get process data by pid.
-    ProcessData & _get_process_data(pid_t pid);
+    SimulatedProcessData & _get_process_data(pid_t pid);
 
     /// Get process info by process type.
     LoneProcessInfo & _get_process_info(process_type_id process_type);
@@ -381,14 +411,18 @@ public:
     /// Log to stderr may be disabled though.
     void _log_error(const char * message = "", ...);
 
-    /// Read all the available, pending data from the
-    /// file descriptor and append result to string.
+    /// Read pending data from the file descriptor and append result to string.
     /// Return true if soemthing's being read.
-    bool _read_all(int fd, std::string & str);
+    bool _read_pending(int fd, std::string & str);
+
+    /// Try to write max possible chunk of data to the file descroptor,
+    /// ignoring signal interruptions.
+    ssize_t _write(int fd, const void * data, size_t size);
 
     /// Write whole string, ignoring signal interruptions.
+    /// Does not expect descriptor to be in non-blocking mode!
     void _write_all(int fd, const std::string & str);
-    void _write_all(int fd, const char * buf, size_t size);
+    void _write_all(int fd, const void * buf, size_t size);
 
     /// Make IO operations on descriptor non-blocking.
     void _set_descriptor_non_blocking(int fd);
@@ -397,26 +431,50 @@ public:
     void _sleep_ms(int ms);
 
 
-
-    bool                _is_running;
+    /// Flag indiacating need to spawn more processes.
     bool                _spawn_more_processes;
+    /// Whether to log output to stdout/stderr.
     bool                _log_to_std;
+    /// Whether redirection of stdin is enabled.
+    bool                _redirect_stdin;
+    /// stdin data to be fed to simualted processes.
+    std::string         _stdin_data;
+    /// Statistics
+    ///
+    /// Number of processes that have failed to perform jib correctly.
     size_t              _failed_count;
+    /// Number of processes successfully done thir duty.
     size_t              _successful_count;
+    /// Number of spawned processes
     size_t              _spawned_count;
+    /// Expected number of spawned processes.
     size_t              _expected_count;
+    /// Buffer for stdout log messages.
     std::string         _log_messages;
+    /// Buffer stderr log messages.
     std::string         _error_log_messages;
+    /// Entropy provider.
     Urandom             _urandom;
-    ProcessMutex        _sync_mutex;
+    /// Initialization mutex.
+    /// Used by a master process to determine moment when the last
+    /// process of the first generation finished initialization stage.
     ProcessMutex        _init_mutex;
-
+    /// Sync mutex, used to synchronize the execution of critical section
+    /// of the first generation of processes.
+    ProcessMutex        _sync_mutex;
+    /// Las process type id.
     process_type_id     _process_type_last;
+    /// Individual data of each lone process.
     LoneProcesses       _lone_processes;
+    /// Individual data of each group of processes.
     ProcessGroups       _process_groups;
+    /// Abstract data of each simulated running proccess.
     RunningProcesses    _running_processes;
+    /// Descriptor map, used for watching descriptor events.
     DescriptorMap       _descriptor_map;
+    /// Poll buffer.
     std::vector<pollfd> _poll_buffer;
+    /// Flag indicating need to update above poll buffer.
     bool                _poll_buffer_needs_update;
 };
 
