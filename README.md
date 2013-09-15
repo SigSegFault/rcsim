@@ -9,16 +9,18 @@ What it basically provides is:
  * ability to add group of processes to simulation (processes of group run simultaneously)
  * ability to assign name to process/group of processes
  * ability to provide number of process instances to be respawned after member of group/lone process exits
- * ability to feed input from stdin to every spawned process.
+ * ability to feed input from stdin to every spawned process
+ * ability to add arbitrary number of I/O pressure generators for specific path on File System
+ * ability to add arbitrary number of CPU pressure generators
+ * ability to add arbitrary number of RAM pressure generators
  * synchronization of execution of piece of code in question for the first generation of processes
- * bunching of stdout/stderr from all the processes to buffer, prepending nice timestamp, with the ability to send output to stdout/stderr of the former process
+ * bunching of stdout/stderr from all simulated processes to buffer, prepending nice timestamp, with the ability to send output to stdout/stderr of the former process
 
 
-TODOs
+TODO
 =====
- * add I/O pressure generators
- * add CPU pressure generators
- * add RAM pressure generators
+ * more real-life examples
+ * reproduce bug with ZFS on FreeBSD, causing cache desynchronization, when writing to same parts of a file using both write() and mmap()
 
 
 Examples
@@ -67,9 +69,25 @@ int main()
     sim.add_process_group(bar, 10, "bar", 90);
     /// 5 instances of baz will run simultaneously.
     sim.add_process_group(baz, 5, "baz", 95);
-    /// only 1 instances of qux will run at each moment of time.
+    /// 1 instances of qux will run simultaneously.
     sim.add_process(qux, "qux", 99);
+    /// Enable logging to std.
     sim.set_log_to_std(true);
+    /// Abort upon encountering first failed process.
+    sim.set_abort_on_first_failure(true);
+    /// Add two I/O pressure generators at '/tmp'.
+    /// Path specification is useful in real-life scenarious,
+    /// when you have server with multiple file systems mounted.
+    /// In that case you can pressure each file system individually.
+    sim.add_io_pressure("/tmp");
+    sim.add_io_pressure("/tmp");
+    /// Add four CPU pressure generators.
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    sim.add_cpu_pressure(2048);
+    /// Add single ram pressure generator.
+    sim.add_ram_pressure(512);
     sim.run_simulation();
     return 0;
 }

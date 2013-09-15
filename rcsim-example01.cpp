@@ -63,6 +63,7 @@ int main()
     sim.add_process_group(baz, 5, "baz", 95);
     /// 1 instances of qux will run simultaneously.
     sim.add_process(qux, "qux", 99);
+    /// Enable logging to std.
     sim.set_log_to_std(true);
     sim.run_simulation();
     return 0;

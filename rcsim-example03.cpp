@@ -23,7 +23,6 @@
 
 #include <stdio.h>
 #include <iostream>
-#include <iterator>
 #include "simulator.hpp"
 
 using namespace std;
@@ -64,8 +63,12 @@ int main()
     sim.add_process_group(baz, 5, "baz", 95);
     /// 1 instances of qux will run simultaneously.
     sim.add_process(qux, "qux", 99);
+    /// Enable logging to std.
     sim.set_log_to_std(true);
     /// Add two I/O pressure generators at '/tmp'.
+    /// Path specification is useful in real-life scenarious,
+    /// when you have server with multiple file systems mounted.
+    /// In that case you can pressure each file system individually.
     sim.add_io_pressure("/tmp");
     sim.add_io_pressure("/tmp");
     /// Add four CPU pressure generators.

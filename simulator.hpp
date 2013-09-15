@@ -218,6 +218,7 @@ public:
     /// Clear stdout log buffer.
     void clear_log_messages();
 
+    /// Get stderr log buffer content.
     /// Simulator's own error messages, as well as output from all childs'
     ///  stderr, will be sent to this buffer.
     const std::string & error_log_messages() const;
