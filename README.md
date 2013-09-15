@@ -1,6 +1,3 @@
-rcsim
-=====
-
 Simple framework for race condition testing. Simulates environment to make your life easier, when it comes to their reproduction.
 
 What it basically provides is:
