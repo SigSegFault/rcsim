@@ -9,6 +9,7 @@ What it basically provides is:
  * ability to add group of processes to simulation (processes of group run simultaneously)
  * ability to assign name to process/group of processes
  * ability to provide number of process instances to be respawned after member of group/lone process exits
+ * ability to feed input from stdin to every spawned process.
  * synchronization of execution of piece of code in question for the first generation of processes
  * bunching of stdout/stderr from all the processes to buffer, prepending nice timestamp, with the ability to send output to stdout/stderr of the former process
 
@@ -18,7 +19,6 @@ TODOs
  * add I/O pressure generators
  * add CPU pressure generators
  * add RAM pressure generators
- * add ability to feed input from stdin to every spawned process.
 
 
 Examples
