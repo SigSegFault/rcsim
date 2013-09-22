@@ -272,8 +272,8 @@ struct FunctorWrapper : public RaceSuspect
     bool run()
     { return _functor(); }
 
-    void shutdown()
-    { }
+    bool shutdown()
+    { return true; }
 
 private:
     F       _functor;

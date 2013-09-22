@@ -915,7 +915,6 @@ void Simulator::_spawn_process(RaceSuspect * handler, GenericProcessData & proce
         ::close(stdout_pipe[0]);
         ::close(stderr_pipe[0]);
 
-        _log_to_std = false;
         try
         {
             /// Restore signal handlers
@@ -946,16 +945,25 @@ void Simulator::_spawn_process(RaceSuspect * handler, GenericProcessData & proce
             ::close(stderr_pipe[1]);
             /// Run process handler.
             _process_handler(handler);
+            /// Flush output.
+            fflush(stdout);
+            fflush(stderr);
             _exit(0);
         }
         catch(const std::exception & e)
         {
-            _log_error("Exception caught: %s.\n", e.what());
+            fprintf(stderr, "Exception caught: %s.\n", e.what());
+            /// Flush output.
+            fflush(stdout);
+            fflush(stderr);
             _exit(1);
         }
         catch(...)
         {
-            _log_error("Unknown exception caught.\n");
+            fprintf(stderr, "Unknown exception caught.\n");
+            /// Flush output.
+            fflush(stdout);
+            fflush(stderr);
             _exit(1);
         }
     }
@@ -996,9 +1004,6 @@ void Simulator::_process_handler(RaceSuspect * handler)
     _sync_mutex.lock_read();
     if (!handler->run())
         throw Exception("handler returned false");
-    /// Flush output.
-    fflush(stdout);
-    fflush(stderr);
     /// Cleanup aftermath.
     if (!handler->shutdown())
         throw Exception("handler shutdown failed");
