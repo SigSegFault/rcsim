@@ -17,7 +17,6 @@ What it basically provides is:
 TODO
 =====
  * more real-life examples
- * reproduce bug with ZFS on FreeBSD, causing cache desynchronization, when writing to same parts of a file using both write() and mmap()
 
 
 Examples
